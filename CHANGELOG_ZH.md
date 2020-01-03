@@ -1,5 +1,25 @@
 # 更新日志
 
+## v0.9.0
+
+### 新功能
+
+- 支持变量机制，accesslog 修改为使用变量机制获取信息
+
+### 重构
+
+- 重构了包引用路径从 `sofastack.io/sofa-mosn` 变更为 `mosn.io/mosn`
+
+## Bug 修复
+
+- 修复 Write 连接时没有对 buf 判空的 bug
+- 修复 HTTP2 Stream 计数错误的 bug
+- 修复在 proxy 协程 panic 时导致的内存泄漏
+- 修复在特定的场景下，读写协程卡死导致的内存泄漏
+- 修复 xDS 并发处理的 bug
+- make image 的产出镜像修改，修改后作为 MOSN 的示例
+- 修正 SOFA RPC 的 TraceLog 中获取 CallerAPP 的字段
+
 ## v0.8.1
 
 ### 新功能
