@@ -24,7 +24,7 @@ import (
 	"mosn.io/api"
 	admin "mosn.io/mosn/pkg/admin/server"
 	"mosn.io/mosn/pkg/admin/store"
-	"mosn.io/mosn/pkg/config/v2"
+	v2 "mosn.io/mosn/pkg/config/v2"
 	"mosn.io/mosn/pkg/configmanager"
 	"mosn.io/mosn/pkg/featuregate"
 	_ "mosn.io/mosn/pkg/filter/network/connectionmanager"
@@ -33,6 +33,7 @@ import (
 	"mosn.io/mosn/pkg/metrics/shm"
 	"mosn.io/mosn/pkg/metrics/sink"
 	"mosn.io/mosn/pkg/network"
+	"mosn.io/mosn/pkg/plugin"
 	"mosn.io/mosn/pkg/router"
 	"mosn.io/mosn/pkg/server"
 	"mosn.io/mosn/pkg/server/keeper"
@@ -63,6 +64,7 @@ func NewMosn(c *v2.MOSNConfig) *Mosn {
 	initializeDefaultPath(configmanager.GetConfigPath())
 	initializePidFile(c.Pid)
 	initializeTracing(c.Tracing)
+	initializePlugin(c.Plugin.LogBase)
 
 	//get inherit fds
 	inheritListeners, reconfigure, err := server.GetInheritListeners()
@@ -264,6 +266,14 @@ func (m *Mosn) Start() {
 	// start mosn server
 	log.StartLogger.Infof("mosn start server")
 	for _, srv := range m.servers {
+
+		// TODO
+		// This can't be deleted, otherwise the code behind is equivalent at
+		// utils.GoWithRecover(func() {
+		//	 m.servers[0].Start()
+		// },
+		srv := srv
+
 		utils.GoWithRecover(func() {
 			srv.Start()
 		}, nil)
@@ -340,6 +350,13 @@ func initializePidFile(pid string) {
 
 func initializeDefaultPath(path string) {
 	types.InitDefaultPath(path)
+}
+
+func initializePlugin(log string) {
+	if log == "" {
+		log = types.MosnLogBasePath
+	}
+	plugin.InitPlugin(log)
 }
 
 type clusterManagerFilter struct {

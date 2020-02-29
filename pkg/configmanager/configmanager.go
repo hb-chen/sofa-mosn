@@ -44,13 +44,17 @@ func ResetServiceRegistryInfo(appInfo v2.ApplicationInfo, subServiceList []strin
 	configLock.Lock()
 	// reset service info
 	config.ServiceRegistry.ServiceAppInfo = v2.ApplicationInfo{
-		AntShareCloud: appInfo.AntShareCloud,
-		DataCenter:    appInfo.DataCenter,
-		AppName:       appInfo.AppName,
-		DeployMode:    appInfo.DeployMode,
-		MasterSystem:  appInfo.MasterSystem,
-		CloudName:     appInfo.CloudName,
-		HostMachine:   appInfo.HostMachine,
+		AntShareCloud:    appInfo.AntShareCloud,
+		DataCenter:       appInfo.DataCenter,
+		AppName:          appInfo.AppName,
+		DeployMode:       appInfo.DeployMode,
+		MasterSystem:     appInfo.MasterSystem,
+		CloudName:        appInfo.CloudName,
+		HostMachine:      appInfo.HostMachine,
+		InstanceId:       appInfo.InstanceId,
+		RegistryEndpoint: appInfo.RegistryEndpoint,
+		AccessKey:        appInfo.AccessKey,
+		SecretKey:        appInfo.SecretKey,
 	}
 
 	// reset servicePubInfo
@@ -120,6 +124,55 @@ func removeClusterConfig(clusterNames []string) bool {
 		}
 	}
 	return dirty
+}
+
+func DeleteClusterHost(clusterName string, hostaddr string) {
+	configLock.Lock()
+	defer configLock.Unlock()
+	dirty := false
+FoundCluster:
+	for i, cluster := range config.ClusterManager.Clusters {
+		if cluster.Name == clusterName {
+			// found host
+			foundIdx := -1
+			for idx, host := range cluster.Hosts {
+				if host.Address == hostaddr {
+					foundIdx = idx
+					break
+				}
+			}
+			if foundIdx != -1 {
+				cluster.Hosts = append(cluster.Hosts[:foundIdx], cluster.Hosts[foundIdx+1:]...)
+				config.ClusterManager.Clusters[i] = cluster
+				dirty = true
+				break FoundCluster
+			}
+		}
+	}
+	dump(dirty)
+}
+
+func AddOrUpdateClusterHost(clusterName string, hostCfg v2.Host) {
+	configLock.Lock()
+	defer configLock.Unlock()
+FoundCluster:
+	for i, cluster := range config.ClusterManager.Clusters {
+		if cluster.Name == clusterName {
+			for idx, host := range cluster.Hosts {
+				if host.Address == hostCfg.Address {
+					// update
+					cluster.Hosts[idx] = hostCfg
+					config.ClusterManager.Clusters[i] = cluster
+					break FoundCluster
+				}
+			}
+			// add a new host
+			cluster.Hosts = append(cluster.Hosts, hostCfg)
+			config.ClusterManager.Clusters[i] = cluster
+			break FoundCluster
+		}
+	}
+	dump(true)
 }
 
 // AddPubInfo
