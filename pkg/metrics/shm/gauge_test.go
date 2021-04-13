@@ -20,9 +20,20 @@ package shm
 import (
 	"testing"
 	"unsafe"
+
+	"github.com/stretchr/testify/assert"
+
+	"mosn.io/mosn/pkg/types"
 )
 
 func TestGauge(t *testing.T) {
+	// just for test
+	originPath := types.MosnConfigPath
+	types.MosnConfigPath = "."
+
+	defer func() {
+		types.MosnConfigPath = originPath
+	}()
 	zone := InitMetricsZone("TestGauge", 10*1024)
 	defer func() {
 		zone.Detach()
@@ -35,6 +46,7 @@ func TestGauge(t *testing.T) {
 	}
 
 	gauge := ShmGauge(unsafe.Pointer(&entry.value))
+	defer gauge.Stop()
 
 	// update
 	gauge.Update(5)
@@ -44,8 +56,12 @@ func TestGauge(t *testing.T) {
 		t.Error("gauge ops failed")
 	}
 
+	gs := gauge.Snapshot()
+	assert.Equal(t, gs.Value(), int64(5))
+
 	gauge.Update(123)
 	if gauge.Value() != 123 {
 		t.Error("gauge ops failed")
 	}
+
 }

@@ -17,19 +17,28 @@
 
 package api
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Route is a route instance
 type Route interface {
 	// RouteRule returns the route rule
 	RouteRule() RouteRule
 
-	// DirectResponseRule returns direct response rile
+	// DirectResponseRule returns direct response rule
 	DirectResponseRule() DirectResponseRule
+
+	// RedirectRule returns redirect rule
+	RedirectRule() RedirectRule
 }
 
 // RouteRule defines parameters for a route
 type RouteRule interface {
+	// VirtualHost returns the virtual host that owns the route
+	VirtualHost() VirtualHost
+
 	// ClusterName returns the route's cluster name
 	ClusterName() string
 
@@ -51,13 +60,45 @@ type RouteRule interface {
 	PerFilterConfig() map[string]interface{}
 
 	// FinalizeRequestHeaders do potentially destructive header transforms on request headers prior to forwarding
-	FinalizeRequestHeaders(headers HeaderMap, requestInfo RequestInfo)
+	FinalizeRequestHeaders(ctx context.Context, headers HeaderMap, requestInfo RequestInfo)
 
 	// FinalizeResponseHeaders do potentially destructive header transforms on response headers prior to forwarding
-	FinalizeResponseHeaders(headers HeaderMap, requestInfo RequestInfo)
+	FinalizeResponseHeaders(ctx context.Context, headers HeaderMap, requestInfo RequestInfo)
 
 	// PathMatchCriterion returns the route's PathMatchCriterion
 	PathMatchCriterion() PathMatchCriterion
+
+	// HeaderMatchCriteria returns the route's HeaderMatchCriteria
+	HeaderMatchCriteria() KeyValueMatchCriteria
+}
+
+// VirtualHost definition.
+type VirtualHost interface {
+	Name() string
+
+	// GetRouteFromEntries returns a Route matched the condition
+	GetRouteFromEntries(ctx context.Context, headers HeaderMap) Route
+
+	// GetAllRoutesFromEntries returns all Route matched the condition
+	GetAllRoutesFromEntries(ctx context.Context, headers HeaderMap) []Route
+
+	// GetRouteFromHeaderKV is used to quickly locate and obtain routes in certain scenarios
+	GetRouteFromHeaderKV(key, value string) Route
+
+	// AddRoute adds a new route into virtual host
+	AddRoute(route RouteBase) error
+
+	// RemoveAllRoutes clear all the routes in the virtual host
+	RemoveAllRoutes()
+
+	// PerFilterConfig returns per filter config from xds
+	PerFilterConfig() map[string]interface{}
+
+	// FinalizeRequestHeaders do potentially destructive header transforms on request headers prior to forwarding
+	FinalizeRequestHeaders(ctx context.Context, headers HeaderMap, requestInfo RequestInfo)
+
+	// FinalizeResponseHeaders do potentially destructive header transforms on response headers prior to forwarding
+	FinalizeResponseHeaders(ctx context.Context, headers HeaderMap, requestInfo RequestInfo)
 }
 
 // Policy defines a group of route policy
@@ -65,6 +106,10 @@ type Policy interface {
 	RetryPolicy() RetryPolicy
 
 	ShadowPolicy() ShadowPolicy
+
+	HashPolicy() HashPolicy
+
+	MirrorPolicy() MirrorPolicy
 }
 
 // RetryCheckStatus type
@@ -110,6 +155,18 @@ type DirectResponseRule interface {
 	Body() string
 }
 
+// RedirectRule contains redirect info
+type RedirectRule interface {
+	// RedirectCode returns the redirect repsonse status code
+	RedirectCode() int
+	// RedirectPath returns the path that will overwrite the current path
+	RedirectPath() string
+	// RedirectHost returns the host that will overwrite the current host
+	RedirectHost() string
+	// RedirectScheme returns the scheme that will overwrite the current scheme
+	RedirectScheme() string
+}
+
 type MetadataMatchCriterion interface {
 	// the name of the metadata key
 	MetadataKeyName() string
@@ -126,7 +183,7 @@ type MetadataMatchCriteria interface {
 	MergeMatchCriteria(metadataMatches map[string]interface{}) MetadataMatchCriteria
 }
 
-// PathMatchType defines the match pattern
+// PathMatchType defines the path match pattern
 type PathMatchType uint32
 
 // Path match patterns
@@ -135,10 +192,50 @@ const (
 	Prefix
 	Exact
 	Regex
-	SofaHeader
+	RPCHeader
+	Variable
 )
 
 type PathMatchCriterion interface {
 	MatchType() PathMatchType
 	Matcher() string
+}
+
+// KeyValueMatchType defines the header or query param match pattern
+type KeyValueMatchType uint32
+
+// Key value match patterns
+const (
+	ValueExact KeyValueMatchType = iota
+	ValueRegex
+)
+
+type KeyValueMatchCriterion interface {
+	Key() string
+	MatchType() KeyValueMatchType
+	Matcher() string
+}
+
+type KeyValueMatchCriteria interface {
+	Get(i int) KeyValueMatchCriterion
+	Len() int
+	Range(f func(KeyValueMatchCriterion) bool)
+}
+
+type HashPolicy interface {
+	GenerateHash(context context.Context) uint64
+}
+
+type MirrorPolicy interface {
+	ClusterName() string
+	IsMirror() bool
+}
+
+type Matchable interface {
+	Match(ctx context.Context, headers HeaderMap) Route
+}
+
+type RouteBase interface {
+	Route
+	Matchable
 }

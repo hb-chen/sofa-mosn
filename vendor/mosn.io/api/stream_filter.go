@@ -19,8 +19,6 @@ package api
 
 import (
 	"context"
-
-	"mosn.io/pkg/buffer"
 )
 
 type StreamFilterStatus string
@@ -31,8 +29,11 @@ const (
 	StreamFilterContinue StreamFilterStatus = "Continue"
 	// Do not iterate to next iterator.
 	StreamFilterStop StreamFilterStatus = "Stop"
+	// terminate request.
+	StreamFiltertermination StreamFilterStatus = "termination"
 
 	StreamFilterReMatchRoute StreamFilterStatus = "Retry Match Route"
+	StreamFilterReChooseHost StreamFilterStatus = "Retry Choose Host"
 )
 
 type StreamFilterBase interface {
@@ -44,7 +45,7 @@ type StreamSenderFilter interface {
 	StreamFilterBase
 
 	// Append encodes request/response
-	Append(ctx context.Context, headers HeaderMap, buf buffer.IoBuffer, trailers HeaderMap) StreamFilterStatus
+	Append(ctx context.Context, headers HeaderMap, buf IoBuffer, trailers HeaderMap) StreamFilterStatus
 
 	// SetSenderFilterHandler sets the StreamSenderFilterHandler
 	SetSenderFilterHandler(handler StreamSenderFilterHandler)
@@ -55,7 +56,7 @@ type StreamReceiverFilter interface {
 	StreamFilterBase
 
 	// OnReceive is called with decoded request/response
-	OnReceive(ctx context.Context, headers HeaderMap, buf buffer.IoBuffer, trailers HeaderMap) StreamFilterStatus
+	OnReceive(ctx context.Context, headers HeaderMap, buf IoBuffer, trailers HeaderMap) StreamFilterStatus
 
 	// SetReceiveFilterHandler sets decoder filter callbacks
 	SetReceiveFilterHandler(handler StreamReceiverFilterHandler)
@@ -83,8 +84,8 @@ type StreamSenderFilterHandler interface {
 	GetResponseHeaders() HeaderMap
 	SetResponseHeaders(headers HeaderMap)
 
-	GetResponseData() buffer.IoBuffer
-	SetResponseData(buf buffer.IoBuffer)
+	GetResponseData() IoBuffer
+	SetResponseData(buf IoBuffer)
 
 	GetResponseTrailers() HeaderMap
 	SetResponseTrailers(trailers HeaderMap)
@@ -105,7 +106,7 @@ type StreamReceiverFilterHandler interface {
 	// AppendData is called with data to be encoded, optionally indicating end of stream.
 	// Filter uses this function to send out request/response data of the stream
 	// endStream supplies whether this is the last data
-	AppendData(buf buffer.IoBuffer, endStream bool)
+	AppendData(buf IoBuffer, endStream bool)
 
 	// AppendTrailers is called with trailers to be encoded, implicitly ends the stream.
 	// Filter uses this function to send out request/response trailers of the stream
@@ -114,8 +115,16 @@ type StreamReceiverFilterHandler interface {
 	// SendHijackReply is called when the filter will response directly
 	SendHijackReply(code int, headers HeaderMap)
 
+	// SendHijackReplyWithBody is called when the filter will response directly with body
+	SendHijackReplyWithBody(code int, headers HeaderMap, body string)
+
 	// SendDirectRespoonse is call when the filter will response directly
-	SendDirectResponse(headers HeaderMap, buf buffer.IoBuffer, trailers HeaderMap)
+	SendDirectResponse(headers HeaderMap, buf IoBuffer, trailers HeaderMap)
+
+	// TerminateStream can force terminate a request asynchronously.
+	// The response status code should be HTTP status code.
+	// If the request is already finished, returns false.
+	TerminateStream(code int) bool
 
 	// TODO: remove all of the following when proxy changed to single request @lieyuan
 	// StreamFilters will modified headers/data/trailer in different steps
@@ -123,13 +132,16 @@ type StreamReceiverFilterHandler interface {
 	GetRequestHeaders() HeaderMap
 	SetRequestHeaders(headers HeaderMap)
 
-	GetRequestData() buffer.IoBuffer
-	SetRequestData(buf buffer.IoBuffer)
+	GetRequestData() IoBuffer
+	SetRequestData(buf IoBuffer)
 
 	GetRequestTrailers() HeaderMap
 	SetRequestTrailers(trailers HeaderMap)
 
 	SetConvert(on bool)
+
+	// GetFilterCurrentPhase get current phase for filter
+	GetFilterCurrentPhase() ReceiverFilterPhase
 }
 
 // StreamFilterChainFactory adds filter into callbacks
@@ -139,17 +151,24 @@ type StreamFilterChainFactory interface {
 
 // StreamFilterChainFactoryCallbacks is called in StreamFilterChainFactory
 type StreamFilterChainFactoryCallbacks interface {
-	AddStreamSenderFilter(filter StreamSenderFilter)
+	AddStreamSenderFilter(filter StreamSenderFilter, p SenderFilterPhase)
 
-	AddStreamReceiverFilter(filter StreamReceiverFilter, p FilterPhase)
+	AddStreamReceiverFilter(filter StreamReceiverFilter, p ReceiverFilterPhase)
 
 	// add access log per stream
 	AddStreamAccessLog(accessLog AccessLog)
 }
 
-type FilterPhase int
+type ReceiverFilterPhase int
 
 const (
-	BeforeRoute FilterPhase = iota
+	BeforeRoute ReceiverFilterPhase = iota
 	AfterRoute
+	AfterChooseHost
+)
+
+type SenderFilterPhase int
+
+const (
+	BeforeSend SenderFilterPhase = iota
 )

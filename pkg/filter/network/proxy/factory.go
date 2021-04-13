@@ -25,7 +25,10 @@ import (
 	"mosn.io/api"
 	"mosn.io/mosn/pkg/config/v2"
 	"mosn.io/mosn/pkg/configmanager"
+	"mosn.io/mosn/pkg/log"
 	"mosn.io/mosn/pkg/proxy"
+	"mosn.io/mosn/pkg/router"
+	"mosn.io/mosn/pkg/types"
 )
 
 func init() {
@@ -64,10 +67,20 @@ func ParseProxyFilter(cfg map[string]interface{}) (*v2.Proxy, error) {
 
 	if proxyConfig.DownstreamProtocol == "" || proxyConfig.UpstreamProtocol == "" {
 		return nil, fmt.Errorf("protocol in string needed in proxy network filter")
-	} else if _, ok := configmanager.ProtocolsSupported[proxyConfig.DownstreamProtocol]; !ok {
+	}
+	if _, ok := configmanager.ProtocolsSupported[proxyConfig.DownstreamProtocol]; !ok {
 		return nil, fmt.Errorf("invalid downstream protocol %s", proxyConfig.DownstreamProtocol)
-	} else if _, ok := configmanager.ProtocolsSupported[proxyConfig.UpstreamProtocol]; !ok {
+	}
+	if _, ok := configmanager.ProtocolsSupported[proxyConfig.UpstreamProtocol]; !ok {
 		return nil, fmt.Errorf("invalid upstream protocol %s", proxyConfig.UpstreamProtocol)
+	}
+
+	// set default proxy router name
+	if proxyConfig.RouterHandlerName == "" {
+		proxyConfig.RouterHandlerName = types.DefaultRouteHandler
+	}
+	if !router.MakeHandlerFuncExists(proxyConfig.RouterHandlerName) {
+		log.DefaultLogger.Alertf(types.ErrorKeyConfigParse, "proxy router handler is not exists, will use default handler instead")
 	}
 
 	return proxyConfig, nil

@@ -22,8 +22,7 @@ import (
 	"net"
 	"time"
 
-	metrics "github.com/rcrowley/go-metrics"
-	"mosn.io/pkg/buffer"
+	"github.com/rcrowley/go-metrics"
 )
 
 // Connection status
@@ -58,7 +57,7 @@ type Connection interface {
 
 	// Write writes data to the connection.
 	// Called by other-side stream connection's read loop. Will loop through stream filters with the buffer if any are installed.
-	Write(buf ...buffer.IoBuffer) error
+	Write(buf ...IoBuffer) error
 
 	// Close closes connection with connection type and event type.
 	// ConnectionCloseType - how to close to connection
@@ -129,10 +128,10 @@ type Connection interface {
 	LocalAddressRestored() bool
 
 	// GetWriteBuffer is used by network writer filter
-	GetWriteBuffer() []buffer.IoBuffer
+	GetWriteBuffer() []IoBuffer
 
 	// GetReadBuffer is used by network read filter
-	GetReadBuffer() buffer.IoBuffer
+	GetReadBuffer() IoBuffer
 
 	// FilterManager returns the FilterManager
 	FilterManager() FilterManager
@@ -145,12 +144,16 @@ type Connection interface {
 	// SetTransferEventListener set a method will be called when connection transfer occur
 	SetTransferEventListener(listener func() bool)
 
-	// SetIdleTimeout sets the timeout that will set the connnection to idle. mosn close idle connection
-	// if no idle timeout setted or a zero value for d means no idle connections.
-	SetIdleTimeout(d time.Duration)
+	// SetIdleTimeout sets the timeout that will set the connnection to idle. At intervals of readTimeout,
+	// Connections can be closed after idle for idleTimeout/readTimeout checks. Mosn close idle connections
+	// if no idle timeout set，a zero value for idleTimeout means no idle connections.
+	SetIdleTimeout(readTimeout time.Duration, idleTimeout time.Duration)
 
 	// State returns the connection state
 	State() ConnState
+
+	// OnRead deals with data not read from doRead process
+	OnRead(buffer IoBuffer)
 }
 
 // ConnectionEvent type

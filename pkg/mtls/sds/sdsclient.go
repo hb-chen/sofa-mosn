@@ -21,7 +21,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/envoyproxy/go-control-plane/envoy/api/v2/auth"
+	auth "github.com/envoyproxy/go-control-plane/envoy/api/v2/auth"
 	"mosn.io/mosn/pkg/log"
 	"mosn.io/mosn/pkg/types"
 	"mosn.io/pkg/utils"
@@ -60,12 +60,11 @@ func NewSdsClientSingleton(config *auth.SdsSecretConfig) types.SdsClient {
 		return sdsClient
 	}
 }
-
-// CloseSdsClientImpl used only mosn exit
 func CloseSdsClient() {
 	sdsClientLock.Lock()
 	defer sdsClientLock.Unlock()
 	if sdsClient != nil && sdsClient.sdsSubscriber != nil {
+		log.DefaultLogger.Warnf("[mtls] sds client stopped")
 		sdsClient.sdsSubscriber.Stop()
 		sdsClient.sdsSubscriber = nil
 		sdsClient = nil

@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"strings"
 	"time"
 
 	"mosn.io/api"
@@ -36,15 +37,17 @@ type RouterConfigurationConfig struct {
 	ResponseHeadersToAdd    []*HeaderValueOption `json:"response_headers_to_add,omitempty"`
 	ResponseHeadersToRemove []string             `json:"response_headers_to_remove,omitempty"`
 	RouterConfigPath        string               `json:"router_configs,omitempty"`
-	StaticVirtualHosts      []*VirtualHost       `json:"virtual_hosts,omitempty"`
+	StaticVirtualHosts      []VirtualHost        `json:"virtual_hosts,omitempty"`
 }
 
 type RouterConfig struct {
-	Match           RouterMatch            `json:"match,omitempty"`
-	Route           RouteAction            `json:"route,omitempty"`
-	DirectResponse  *DirectResponseAction  `json:"direct_response,omitempty"`
-	MetadataConfig  *MetadataConfig        `json:"metadata,omitempty"`
-	PerFilterConfig map[string]interface{} `json:"per_filter_config,omitempty"`
+	Match                 RouterMatch            `json:"match,omitempty"`
+	Route                 RouteAction            `json:"route,omitempty"`
+	Redirect              *RedirectAction        `json:"redirect,omitempty"`
+	DirectResponse        *DirectResponseAction  `json:"direct_response,omitempty"`
+	MetadataConfig        *MetadataConfig        `json:"metadata,omitempty"`
+	PerFilterConfig       map[string]interface{} `json:"per_filter_config,omitempty"`
+	RequestMirrorPolicies *RequestMirrorPolicy   `json:"request_mirror_policies,omitempty"`
 }
 
 type RouterActionConfig struct {
@@ -52,12 +55,15 @@ type RouterActionConfig struct {
 	UpstreamProtocol        string               `json:"upstream_protocol,omitempty"`
 	ClusterHeader           string               `json:"cluster_header,omitempty"`
 	WeightedClusters        []WeightedCluster    `json:"weighted_clusters,omitempty"`
+	HashPolicy              []HashPolicy         `json:"hash_policy,omitempty"`
 	MetadataConfig          *MetadataConfig      `json:"metadata_match,omitempty"`
 	TimeoutConfig           api.DurationConfig   `json:"timeout,omitempty"`
 	RetryPolicy             *RetryPolicy         `json:"retry_policy,omitempty"`
 	PrefixRewrite           string               `json:"prefix_rewrite,omitempty"`
+	RegexRewrite            *RegexRewrite        `json:"regex_rewrite,omitempty"`
 	HostRewrite             string               `json:"host_rewrite,omitempty"`
 	AutoHostRewrite         bool                 `json:"auto_host_rewrite,omitempty"`
+	AutoHostRewriteHeader   string               `json:"auto_host_rewrite_header,omitempty"`
 	RequestHeadersToAdd     []*HeaderValueOption `json:"request_headers_to_add,omitempty"`
 	ResponseHeadersToAdd    []*HeaderValueOption `json:"response_headers_to_add,omitempty"`
 	ResponseHeadersToRemove []string             `json:"response_headers_to_remove,omitempty"`
@@ -73,6 +79,22 @@ type RetryPolicyConfig struct {
 	RetryOn            bool               `json:"retry_on,omitempty"`
 	RetryTimeoutConfig api.DurationConfig `json:"retry_timeout,omitempty"`
 	NumRetries         uint32             `json:"num_retries,omitempty"`
+}
+
+// RegexRewrite represents the regex rewrite parameters
+type RegexRewrite struct {
+	Pattern      PatternConfig `json:"pattern,omitempty"`
+	Substitution string        `json:"substitution,omitempty"`
+}
+
+type PatternConfig struct {
+	GoogleRe2 GoogleRe2Config `json:"google_re2,omitempty"`
+	Regex     string          `json:"regex,omitempty"`
+}
+
+// TODO: not implement yet
+type GoogleRe2Config struct {
+	MaxProgramSize uint32 `json:"max_program_size,omitempty"`
 }
 
 // Router, the list of routes that will be matched, in order, for incoming requests.
@@ -175,7 +197,7 @@ type HeaderValue struct {
 
 // RouterConfiguration is a config for routers
 type RouterConfiguration struct {
-	VirtualHosts []*VirtualHost `json:"-"`
+	VirtualHosts []VirtualHost `json:"-"`
 	RouterConfigurationConfig
 }
 
@@ -206,6 +228,10 @@ func (rc RouterConfiguration) MarshalJSON() (b []byte, err error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(fileName) > MaxFilePath {
+			fileName = fileName[:MaxFilePath]
+		}
+		fileName = strings.ReplaceAll(fileName, sep, "_")
 		fileName = fileName + ".json"
 		delete(allFiles, fileName)
 		fileName = path.Join(rc.RouterConfigPath, fileName)
@@ -241,8 +267,8 @@ func (rc *RouterConfiguration) UnmarshalJSON(b []byte) error {
 		}
 		for _, f := range files {
 			fileName := path.Join(cfg.RouterConfigPath, f.Name())
-			vh := &VirtualHost{}
-			e := utils.ReadJsonFile(fileName, vh)
+			vh := VirtualHost{}
+			e := utils.ReadJsonFile(fileName, &vh)
 			switch e {
 			case nil:
 				rc.VirtualHosts = append(rc.VirtualHosts, vh)
@@ -258,21 +284,32 @@ func (rc *RouterConfiguration) UnmarshalJSON(b []byte) error {
 
 // VirtualHost is used to make up the route table
 type VirtualHost struct {
-	Name                    string               `json:"name,omitempty"`
-	Domains                 []string             `json:"domains,omitempty"`
-	Routers                 []Router             `json:"routers,omitempty"`
-	RequireTLS              string               `json:"require_tls,omitempty"` // not used yet
-	RequestHeadersToAdd     []*HeaderValueOption `json:"request_headers_to_add,omitempty"`
-	ResponseHeadersToAdd    []*HeaderValueOption `json:"response_headers_to_add,omitempty"`
-	ResponseHeadersToRemove []string             `json:"response_headers_to_remove,omitempty"`
+	Name                    string                 `json:"name,omitempty"`
+	Domains                 []string               `json:"domains,omitempty"`
+	Routers                 []Router               `json:"routers,omitempty"`
+	RequireTLS              string                 `json:"require_tls,omitempty"` // not used yet
+	RequestHeadersToAdd     []*HeaderValueOption   `json:"request_headers_to_add,omitempty"`
+	ResponseHeadersToAdd    []*HeaderValueOption   `json:"response_headers_to_add,omitempty"`
+	ResponseHeadersToRemove []string               `json:"response_headers_to_remove,omitempty"`
+	PerFilterConfig         map[string]interface{} `json:"per_filter_config,omitempty"`
 }
 
 // RouterMatch represents the route matching parameters
 type RouterMatch struct {
-	Prefix  string          `json:"prefix,omitempty"`  // Match request's Path with Prefix Comparing
-	Path    string          `json:"path,omitempty"`    // Match request's Path with Exact Comparing
-	Regex   string          `json:"regex,omitempty"`   // Match request's Path with Regex Comparing
-	Headers []HeaderMatcher `json:"headers,omitempty"` // Match request's Headers
+	Prefix         string                 `json:"prefix,omitempty"`    // Match request's Path with Prefix Comparing
+	Path           string                 `json:"path,omitempty"`      // Match request's Path with Exact Comparing
+	Regex          string                 `json:"regex,omitempty"`     // Match request's Path with Regex Comparing
+	Headers        []HeaderMatcher        `json:"headers,omitempty"`   // Match request's Headers
+	Variables      []VariableMatcher      `json:"variables,omitempty"` // Match request's variable
+	DslExpressions []DslExpressionMatcher `json:"dsl_expressions,omitempty"`
+}
+
+// RedirectAction represents the redirect response parameters
+type RedirectAction struct {
+	ResponseCode   int    `json:"response_code,omitempty"`
+	PathRedirect   string `json:"path_redirect,omitempty"`
+	HostRedirect   string `json:"host_redirect,omitempty"`
+	SchemeRedirect string `json:"scheme_redirect,omitempty"`
 }
 
 // DirectResponseAction represents the direct response parameters
@@ -281,7 +318,7 @@ type DirectResponseAction struct {
 	Body       string `json:"body,omitempty"`
 }
 
-// WeightedCluster.
+// WeightedCluster ...
 // Multiple upstream clusters unsupport stream filter type:  healthcheckcan be specified for a given route.
 // The request is routed to one of the upstream
 // clusters based on weights assigned to each cluster
@@ -296,15 +333,27 @@ type HeaderMatcher struct {
 	Regex bool   `json:"regex,omitempty"`
 }
 
-// TCP Proxy Route
-type TCPRouteConfig struct {
+// VariableMatcher specifies a set of variables that the route should match on.
+type VariableMatcher struct {
+	Name  string `json:"name,omitempty"`
+	Value string `json:"value,omitempty"`
+	Regex string `json:"regex,omitempty"`
+	Model string `json:"model,omitempty"` // support && and || operator
+}
+
+type DslExpressionMatcher struct {
+	Expression string `json:"expression"`
+}
+
+// Stream Proxy Route
+type StreamRouteConfig struct {
 	Cluster string   `json:"cluster,omitempty"`
 	Sources []string `json:"source_addrs,omitempty"`
 	Dests   []string `json:"destination_addrs,omitempty"`
 }
 
-// TCPRoute
-type TCPRoute struct {
+// StreamRoute ...
+type StreamRoute struct {
 	Cluster          string
 	SourceAddrs      []CidrRange
 	DestinationAddrs []CidrRange
@@ -312,9 +361,16 @@ type TCPRoute struct {
 	DestinationPort  string
 }
 
-// CidrRange
+// CidrRange ...
 type CidrRange struct {
 	Address string
 	Length  uint32
 	IpNet   *net.IPNet
+}
+
+// RequestMirrorPolicy mirror policy
+type RequestMirrorPolicy struct {
+	Cluster      string `json:"cluster,omitempty"`
+	Percent      uint32 `json:"percent,omitempty"`
+	TraceSampled bool   `json:"trace_sampled,omitempty"` // TODO not implement
 }

@@ -5,6 +5,8 @@ TARGET_SIDECAR  = mosn
 CONFIG_FILE     = mosn_config.json
 PROJECT_NAME    = mosn.io/mosn
 
+ISTIO_VERSION   = 1.5.2
+
 SCRIPT_DIR      = $(shell pwd)/etc/script
 
 MAJOR_VERSION   = $(shell cat VERSION)
@@ -12,6 +14,8 @@ GIT_VERSION     = $(shell git log -1 --pretty=format:%h)
 GIT_NOTES       = $(shell git log -1 --oneline)
 
 BUILD_IMAGE     = godep-builder
+
+WASM_IMAGE      = mosn-wasm
 
 IMAGE_NAME      = mosn
 REPOSITORY      = mosnio/${IMAGE_NAME}
@@ -22,8 +26,17 @@ RPM_TAR_NAME    = afe-${TARGET}
 RPM_SRC_DIR     = ${RPM_TAR_NAME}-${RPM_VERSION}
 RPM_TAR_FILE    = ${RPM_SRC_DIR}.tar.gz
 
+TAGS			= ${tags}
+TAGS_OPT 		=
+
+# support build custom tags
+ifneq ($(TAGS),)
+TAGS_OPT 		= -tags ${TAGS}
+endif
+
+
 ut-local:
-	go test -v `go list ./pkg/... | grep -v pkg/mtls/crypto/tls`
+	GO111MODULE=off go test -gcflags=-l -v `go list ./pkg/... | grep -v pkg/mtls/crypto/tls | grep -v pkg/networkextention`
 
 unit-test:
 	docker build --rm -t ${BUILD_IMAGE} build/contrib/builder/binary
@@ -37,11 +50,26 @@ coverage:
 	docker run --rm -v $(GOPATH):/go -v $(shell pwd):/go/src/${PROJECT_NAME} -w /go/src/${PROJECT_NAME} ${BUILD_IMAGE} make coverage-local
 
 integrate-local:
-	go test -p 1 -v ./test/integrate/...
+	GO111MODULE=off go test -p 1 -v ./test/integrate/...
+
+integrate-local-netpoll:
+	GO111MODULE=off NETPOLL=on go test -p 1 -v ./test/integrate/...
 
 integrate:
 	docker build --rm -t ${BUILD_IMAGE} build/contrib/builder/binary
 	docker run --rm -v $(GOPATH):/go -v $(shell pwd):/go/src/${PROJECT_NAME} -w /go/src/${PROJECT_NAME} ${BUILD_IMAGE} make integrate-local
+
+
+integrate-netpoll:
+	docker build --rm -t ${BUILD_IMAGE} build/contrib/builder/binary
+	docker run --rm -v $(GOPATH):/go -v $(shell pwd):/go/src/${PROJECT_NAME} -w /go/src/${PROJECT_NAME} ${BUILD_IMAGE} make integrate-local-netpoll
+
+integrate-framework:
+	@cd ./test/cases && bash run_all.sh
+
+integrate-new:
+	docker build --rm -t ${BUILD_IMAGE} build/contrib/builder/binary
+	docker run --rm -v $(GOPATH):/go -v $(shell pwd):/go/src/${PROJECT_NAME} -w /go/src/${PROJECT_NAME} ${BUILD_IMAGE} make integrate-framework
 
 build:
 	docker build --rm -t ${BUILD_IMAGE} build/contrib/builder/binary
@@ -51,14 +79,17 @@ build-host:
 	docker build --rm -t ${BUILD_IMAGE} build/contrib/builder/binary
 	docker run --net=host --rm -v $(shell pwd):/go/src/${PROJECT_NAME} -w /go/src/${PROJECT_NAME} ${BUILD_IMAGE} make build-local
 
+build-wasm-image:
+	docker build --rm -t ${WASM_IMAGE}:${MAJOR_VERSION} -f build/contrib/builder/wasm/Dockerfile .
+
 binary: build
 
 binary-host: build-host
 
 build-local:
 	@rm -rf build/bundles/${MAJOR_VERSION}/binary
-	CGO_ENABLED=0 go build\
-		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n') -X main.Version=${MAJOR_VERSION}(${GIT_VERSION})" \
+	GO111MODULE=off CGO_ENABLED=1 go build ${TAGS_OPT} \
+		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n') -X main.Version=${MAJOR_VERSION}(${GIT_VERSION}) -X ${PROJECT_NAME}/pkg/types.IstioVersion=${ISTIO_VERSION}" \
 		-v -o ${TARGET} \
 		${PROJECT_NAME}/cmd/mosn/main
 	mkdir -p build/bundles/${MAJOR_VERSION}/binary
@@ -69,8 +100,8 @@ build-local:
 
 build-linux32:
 	@rm -rf build/bundles/${MAJOR_VERSION}/binary
-	CGO_ENABLED=0 env GOOS=linux GOARCH=386 go build\
-		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n') -X main.Version=${MAJOR_VERSION}(${GIT_VERSION})" \
+	GO111MODULE=off CGO_ENABLED=1 env GOOS=linux GOARCH=386 go build ${TAGS_OPT} \
+		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n') -X main.Version=${MAJOR_VERSION}(${GIT_VERSION}) -X ${PROJECT_NAME}/pkg/types.IstioVersion=${ISTIO_VERSION}" \
 		-v -o ${TARGET} \
 		${PROJECT_NAME}/cmd/mosn/main
 	mkdir -p build/bundles/${MAJOR_VERSION}/binary
@@ -81,8 +112,8 @@ build-linux32:
 
 build-linux64:
 	@rm -rf build/bundles/${MAJOR_VERSION}/binary
-	CGO_ENABLED=0 env GOOS=linux GOARCH=amd64 go build\
-		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n') -X main.Version=${MAJOR_VERSION}(${GIT_VERSION})" \
+	GO111MODULE=off CGO_ENABLED=1 env GOOS=linux GOARCH=amd64 go build ${TAGS_OPT} \
+		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n') -X main.Version=${MAJOR_VERSION}(${GIT_VERSION}) -X ${PROJECT_NAME}/pkg/types.IstioVersion=${ISTIO_VERSION}" \
 		-v -o ${TARGET} \
 		${PROJECT_NAME}/cmd/mosn/main
 	mkdir -p build/bundles/${MAJOR_VERSION}/binary

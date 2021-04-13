@@ -33,13 +33,20 @@ import (
 )
 
 func init() {
-	keeper.AddSignalCallback(syscall.SIGHUP, func() {
+	keeper.AddSignalCallback(func() {
 		// reload, fork new mosn
 		reconfigure(true)
-	})
+	}, syscall.SIGHUP)
 }
 
-var GracefulTimeout = time.Second * 30 //default 30s
+var (
+	GracefulTimeout            = time.Second * 30 //default 30s
+	enableInheritOldMosnconfig = false
+)
+
+func EnableInheritOldMosnconfig(enable bool) {
+	enableInheritOldMosnconfig = enable
+}
 
 func startNewMosn() error {
 	execSpec := &syscall.ProcAttr{
@@ -75,19 +82,39 @@ func reconfigure(start bool) {
 	defer configmanager.DumpUnlock()
 
 	// transfer listen fd
-	var notify net.Conn
+	var listenSockConn net.Conn
 	var err error
 	var n int
 	var buf [1]byte
-	if notify, err = sendInheritListeners(); err != nil {
+	if listenSockConn, err = sendInheritListeners(); err != nil {
 		return
 	}
 
+	if enableInheritOldMosnconfig {
+		if err = SendInheritConfig(); err != nil {
+			listenSockConn.Close()
+			log.DefaultLogger.Alertf(types.ErrorKeyReconfigure, "[old mosn] [SendInheritConfig] new mosn start failed")
+			// Restore PID
+			keeper.WritePidFile()
+			return
+		}
+	}
+
 	// Wait new mosn parse configuration
-	notify.SetReadDeadline(time.Now().Add(10 * time.Minute))
-	n, err = notify.Read(buf[:])
+	listenSockConn.SetReadDeadline(time.Now().Add(10 * time.Minute))
+	n, err = listenSockConn.Read(buf[:])
 	if n != 1 {
-		log.DefaultLogger.Alertf(types.ErrorKeyReconfigure, "new mosn start failed")
+		log.DefaultLogger.Alertf(types.ErrorKeyReconfigure, "[old mosn] [read ack] new mosn start failed")
+		// Restore PID
+		keeper.WritePidFile()
+		return
+	}
+
+	// ack new mosn
+	if _, err := listenSockConn.Write([]byte{0}); err != nil {
+		log.DefaultLogger.Alertf(types.ErrorKeyReconfigure, "[old mosn] [write ack] new mosn start failed")
+		// Restore PID
+		keeper.WritePidFile()
 		return
 	}
 

@@ -20,16 +20,20 @@ package xprotocol
 import (
 	"errors"
 
+	"mosn.io/api"
+
+	"mosn.io/mosn/pkg/protocol"
 	"mosn.io/mosn/pkg/types"
 )
 
 var (
-	protocolMap = make(map[types.ProtocolName]XProtocol)
-	matcherMap  = make(map[types.ProtocolName]types.ProtocolMatch)
+	protocolMap = make(map[types.ProtocolName]api.XProtocol)
+	matcherMap  = make(map[types.ProtocolName]api.ProtocolMatch)
+	mappingMap  = make(map[types.ProtocolName]api.HTTPMapping)
 )
 
 // RegisterProtocol register the protocol to factory
-func RegisterProtocol(name types.ProtocolName, protocol XProtocol) error {
+func RegisterProtocol(name types.ProtocolName, protocol api.XProtocol) error {
 	// check name conflict
 	_, ok := protocolMap[name]
 	if ok {
@@ -41,12 +45,12 @@ func RegisterProtocol(name types.ProtocolName, protocol XProtocol) error {
 }
 
 // GetProtocol return the corresponding protocol for given name(if was registered)
-func GetProtocol(name types.ProtocolName) XProtocol {
+func GetProtocol(name types.ProtocolName) api.XProtocol {
 	return protocolMap[name]
 }
 
 // RegisterMatcher register the matcher of the protocol into factory
-func RegisterMatcher(name types.ProtocolName, matcher types.ProtocolMatch) error {
+func RegisterMatcher(name types.ProtocolName, matcher api.ProtocolMatch) error {
 	// check name conflict
 	_, ok := matcherMap[name]
 	if ok {
@@ -58,6 +62,28 @@ func RegisterMatcher(name types.ProtocolName, matcher types.ProtocolMatch) error
 }
 
 // GetMatcher return the corresponding matcher for given name(if was registered)
-func GetMatcher(name types.ProtocolName) types.ProtocolMatch {
+func GetMatcher(name types.ProtocolName) api.ProtocolMatch {
 	return matcherMap[name]
+}
+
+//GetMatchers return all matchers that was registered
+func GetMatchers() map[types.ProtocolName]api.ProtocolMatch {
+	return matcherMap
+}
+
+// RegisterMapping register the HTTP status code mapping function of the protocol into factory
+func RegisterMapping(name types.ProtocolName, mapping protocol.HTTPMapping) error {
+	// check name conflict
+	_, ok := mappingMap[name]
+	if ok {
+		return errors.New("duplicate mapping register:" + string(name))
+	}
+
+	mappingMap[name] = mapping
+	return nil
+}
+
+// GetMapping return the corresponding HTTP status code mapping function for given name(if was registered)
+func GetMapping(name types.ProtocolName) protocol.HTTPMapping {
+	return mappingMap[name]
 }

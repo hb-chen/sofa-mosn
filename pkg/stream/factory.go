@@ -34,7 +34,7 @@ func Register(prot types.ProtocolName, factory ProtocolStreamFactory) {
 	streamFactories[prot] = factory
 }
 
-func CreateServerStreamConnection(context context.Context, prot api.Protocol, connection api.Connection,
+func CreateServerStreamConnection(context context.Context, prot api.ProtocolName, connection api.Connection,
 	callbacks types.ServerStreamConnectionEventListener) types.ServerStreamConnection {
 
 	if ssc, ok := streamFactories[prot]; ok {
@@ -51,13 +51,13 @@ func SelectStreamFactoryProtocol(ctx context.Context, prot string, peek []byte) 
 		err = factory.ProtocolMatch(ctx, prot, peek)
 		if err == nil {
 			return p, nil
-		} else if err == EAGAIN {
+		}
+		if err == EAGAIN {
 			again = true
 		}
 	}
 	if again {
 		return "", EAGAIN
-	} else {
-		return "", FAILED
 	}
+	return "", FAILED
 }

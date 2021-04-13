@@ -18,25 +18,28 @@
 package network
 
 import (
+	"fmt"
 	"net"
+	"strconv"
 	"time"
 
+	"go.uber.org/atomic"
 	"mosn.io/api"
 )
 
 // RequestInfo
 type RequestInfo struct {
-	protocol                 api.Protocol
+	protocol                 api.ProtocolName
 	startTime                time.Time
 	responseFlag             api.ResponseFlag
 	upstreamHost             api.HostInfo
-	requestReceivedDuration  time.Duration
-	requestFinishedDuration  time.Duration
-	responseReceivedDuration time.Duration
-	processTimeDuration      time.Duration
-	bytesSent                uint64
-	bytesReceived            uint64
-	responseCode             int
+	requestReceivedDuration  atomic.Duration
+	requestFinishedDuration  atomic.Duration
+	responseReceivedDuration atomic.Duration
+	processTimeDuration      atomic.Duration
+	bytesSent                atomic.Uint64
+	bytesReceived            atomic.Uint64
+	responseCode             atomic.Int64
 	localAddress             string
 	downstreamLocalAddress   net.Addr
 	downstreamRemoteAddress  net.Addr
@@ -44,7 +47,7 @@ type RequestInfo struct {
 	routerRule               api.RouteRule
 }
 
-func newRequestInfoWithPort(protocol api.Protocol) api.RequestInfo {
+func newRequestInfoWithPort(protocol api.ProtocolName) api.RequestInfo {
 	return &RequestInfo{
 		protocol:  protocol,
 		startTime: time.Now(),
@@ -67,64 +70,68 @@ func (r *RequestInfo) SetStartTime() {
 }
 
 func (r *RequestInfo) RequestReceivedDuration() time.Duration {
-	return r.requestReceivedDuration
+	return r.requestReceivedDuration.Load()
 }
 
 func (r *RequestInfo) SetRequestReceivedDuration(t time.Time) {
-	r.requestReceivedDuration = t.Sub(r.startTime)
+	r.requestReceivedDuration.Store(t.Sub(r.startTime))
 }
 
 func (r *RequestInfo) ResponseReceivedDuration() time.Duration {
-	return r.responseReceivedDuration
+	return r.responseReceivedDuration.Load()
 }
 
 func (r *RequestInfo) SetResponseReceivedDuration(t time.Time) {
-	r.responseReceivedDuration = t.Sub(r.startTime)
+	r.responseReceivedDuration.Store(t.Sub(r.startTime))
 }
 
 func (r *RequestInfo) RequestFinishedDuration() time.Duration {
-	return r.requestFinishedDuration
+	return r.requestFinishedDuration.Load()
 }
 
 func (r *RequestInfo) SetRequestFinishedDuration(t time.Time) {
-	r.requestFinishedDuration = t.Sub(r.startTime)
+	r.requestFinishedDuration.Store(t.Sub(r.startTime))
 
 }
 
 func (r *RequestInfo) ProcessTimeDuration() time.Duration {
-	return r.processTimeDuration
+	return r.processTimeDuration.Load()
 }
 
 func (r *RequestInfo) SetProcessTimeDuration(d time.Duration) {
-	r.processTimeDuration = d
+	r.processTimeDuration.Store(d)
 }
 
 func (r *RequestInfo) BytesSent() uint64 {
-	return r.bytesSent
+	return r.bytesSent.Load()
 }
 
 func (r *RequestInfo) SetBytesSent(bytesSent uint64) {
-	r.bytesSent = bytesSent
+	r.bytesSent.Store(bytesSent)
 }
 
 func (r *RequestInfo) BytesReceived() uint64 {
-	return r.bytesReceived
+	return r.bytesReceived.Load()
 }
 
 func (r *RequestInfo) SetBytesReceived(bytesReceived uint64) {
-	r.bytesReceived = bytesReceived
+	r.bytesReceived.Store(bytesReceived)
 }
 
-func (r *RequestInfo) Protocol() api.Protocol {
+func (r *RequestInfo) Protocol() api.ProtocolName {
 	return r.protocol
 }
 
+func (r *RequestInfo) SetProtocol(p api.ProtocolName) {
+	r.protocol = p
+}
+
 func (r *RequestInfo) ResponseCode() int {
-	return r.responseCode
+	return int(r.responseCode.Load())
 }
 
 func (r *RequestInfo) SetResponseCode(code int) {
-	r.responseCode = code
+	r.responseCode.Store(int64(code))
 }
 
 func (r *RequestInfo) Duration() time.Duration {
@@ -133,6 +140,10 @@ func (r *RequestInfo) Duration() time.Duration {
 
 func (r *RequestInfo) GetResponseFlag(flag api.ResponseFlag) bool {
 	return r.responseFlag&flag != 0
+}
+
+func (r *RequestInfo) GetResponseFlagResult() string {
+	return fmt.Sprintf("0x%s", strconv.FormatInt(r.responseCode.Load(), 16))
 }
 
 func (r *RequestInfo) SetResponseFlag(flag api.ResponseFlag) {

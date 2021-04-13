@@ -92,11 +92,8 @@ func TransferServer(handler types.ConnectionHandler) {
 		}
 	}, nil)
 
-	select {
-	case <-time.After(2*TransferTimeout + 2*buffer.ConnReadTimeout + 10*time.Second):
-		log.DefaultLogger.Infof("[network] [transfer] [server] TransferServer exit")
-		return
-	}
+	<-time.After(2*TransferTimeout + 2*buffer.ConnReadTimeout + 10*time.Second)
+	log.DefaultLogger.Infof("[network] [transfer] [server] TransferServer exit")
 }
 
 // transferHandler is called on recv transfer request
@@ -578,9 +575,11 @@ func transferFindListen(addr net.Addr, handler types.ConnectionHandler) types.Li
 	var listener types.Listener
 	if listener = handler.FindListenerByAddress(address); listener != nil {
 		return listener
-	} else if listener = handler.FindListenerByAddress(ipv4); listener != nil {
+	}
+	if listener = handler.FindListenerByAddress(ipv4); listener != nil {
 		return listener
-	} else if listener = handler.FindListenerByAddress(ipv6); listener != nil {
+	}
+	if listener = handler.FindListenerByAddress(ipv6); listener != nil {
 		return listener
 	}
 

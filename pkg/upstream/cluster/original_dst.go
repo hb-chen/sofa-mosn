@@ -21,11 +21,12 @@ import (
 	"strings"
 	"sync"
 
+	"net"
+
 	"mosn.io/api"
 	v2 "mosn.io/mosn/pkg/config/v2"
 	mosnctx "mosn.io/mosn/pkg/context"
 	"mosn.io/mosn/pkg/types"
-	"net"
 )
 
 func init() {
@@ -39,7 +40,7 @@ type OriginalDstLoadBalancer struct {
 	host  map[string]types.Host
 }
 
-func newOriginalDstLoadBalancer(hosts types.HostSet) types.LoadBalancer {
+func newOriginalDstLoadBalancer(info types.ClusterInfo, hosts types.HostSet) types.LoadBalancer {
 	return &OriginalDstLoadBalancer{
 		hosts: hosts,
 		host:  make(map[string]types.Host),

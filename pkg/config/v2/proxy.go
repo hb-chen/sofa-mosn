@@ -19,13 +19,13 @@ package v2
 
 import "time"
 
-// TCPProxy
-type TCPProxy struct {
+// StreamProxy
+type StreamProxy struct {
 	StatPrefix         string         `json:"stat_prefix,omitempty"`
 	Cluster            string         `json:"cluster,omitempty"`
 	IdleTimeout        *time.Duration `json:"idle_timeout,omitempty"`
 	MaxConnectAttempts uint32         `json:"max_connect_attempts,omitempty"`
-	Routes             []*TCPRoute    `json:"routes,omitempty"`
+	Routes             []*StreamRoute `json:"routes,omitempty"`
 }
 
 // WebSocketProxy
@@ -37,15 +37,17 @@ type WebSocketProxy struct {
 
 // Proxy
 type Proxy struct {
-	Name               string                 `json:"name,omitempty"`
-	DownstreamProtocol string                 `json:"downstream_protocol,omitempty"`
-	UpstreamProtocol   string                 `json:"upstream_protocol,omitempty"`
-	RouterConfigName   string                 `json:"router_config_name,omitempty"`
-	ValidateClusters   bool                   `json:"validate_clusters,omitempty"`
-	ExtendConfig       map[string]interface{} `json:"extend_config,omitempty"`
-}
+	Name                       string                 `json:"name,omitempty"`
+	DownstreamProtocol         string                 `json:"downstream_protocol,omitempty"`
+	UpstreamProtocol           string                 `json:"upstream_protocol,omitempty"`
+	FallbackForUnknownProtocol bool                   `json:"fallback_for_unknown_protocol,omitempty"`
+	RouterConfigName           string                 `json:"router_config_name,omitempty"`
+	RouterHandlerName          string                 `json:"router_handler_name,omitempty"`
+	ValidateClusters           bool                   `json:"validate_clusters,omitempty"`
+	ExtendConfig               map[string]interface{} `json:"extend_config,omitempty"`
 
-// XProxyExtendConfig
-type XProxyExtendConfig struct {
-	SubProtocol string `json:"sub_protocol,omitempty"`
+	// proxy level concurrency config,
+	// concurrency num = worker num in worker pool per connection
+	// if concurrency num == 0, use global worker pool
+	ConcurrencyNum int `json:"concurrency_num,omitempty"`
 }

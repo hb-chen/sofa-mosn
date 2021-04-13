@@ -31,12 +31,11 @@ type Config struct {
 	LogLevel        log.Level
 	LogRoller       string
 	GracefulTimeout time.Duration
-	Processor       int
 	UseNetpollMode  bool
 }
 
 type Server interface {
-	AddListener(lc *v2.Listener, updateListenerFilter bool, updateNetworkFilter bool, updateStreamFilter bool) (types.ListenerEventListener, error)
+	AddListener(lc *v2.Listener) (types.ListenerEventListener, error)
 
 	Start()
 

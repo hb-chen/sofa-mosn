@@ -22,9 +22,13 @@ import (
 	"fmt"
 	"strconv"
 
+	"mosn.io/api"
+
+	"mosn.io/mosn/pkg/variable"
+
 	"mosn.io/mosn/pkg/log"
-	"mosn.io/mosn/pkg/protocol/xprotocol"
 	"mosn.io/mosn/pkg/stream"
+	"mosn.io/mosn/pkg/track"
 	"mosn.io/mosn/pkg/types"
 )
 
@@ -42,7 +46,7 @@ type xStream struct {
 
 	receiver types.StreamReceiveListener
 
-	frame xprotocol.XFrame
+	frame api.XFrame
 }
 
 // ~~ types.Stream
@@ -57,15 +61,15 @@ func (s *xStream) AppendHeaders(ctx context.Context, headers types.HeaderMap, en
 	}
 
 	// type assertion
-	frame, ok := headers.(xprotocol.XFrame)
+	frame, ok := headers.(api.XFrame)
 	if !ok {
 		err = fmt.Errorf("headers %T is not a XFrame instance", headers)
 		return
 	}
 
 	// hijack process
-	if s.direction == stream.ServerStream && frame.GetStreamType() == xprotocol.Request {
-		s.frame, err = s.buildHijackResp(headers)
+	if s.direction == stream.ServerStream && frame.GetStreamType() == api.Request {
+		s.frame, err = s.buildHijackResp(ctx, frame, headers)
 		if err != nil {
 			return
 		}
@@ -80,12 +84,15 @@ func (s *xStream) AppendHeaders(ctx context.Context, headers types.HeaderMap, en
 	return
 }
 
-func (s *xStream) buildHijackResp(header types.HeaderMap) (xprotocol.XFrame, error) {
-	if status, ok := header.Get(types.HeaderStatus); ok {
-		header.Del(types.HeaderStatus)
+func (s *xStream) buildHijackResp(ctx context.Context, request api.XFrame, header types.HeaderMap) (api.XFrame, error) {
+	status, err := variable.GetVariableValue(s.ctx, types.VarHeaderStatus)
+	if err != nil {
+		return nil, err
+	}
+	if status != "" {
 		statusCode, _ := strconv.Atoi(status)
 		proto := s.sc.protocol
-		return proto.Hijack(proto.Mapping(uint32(statusCode))), nil
+		return proto.Hijack(ctx, request, proto.Mapping(uint32(statusCode))), nil
 	}
 
 	return nil, types.ErrNoStatusCodeForHijack
@@ -95,6 +102,8 @@ func (s *xStream) AppendData(context context.Context, data types.IoBuffer, endSt
 	if log.Proxy.GetLogLevel() >= log.DEBUG {
 		log.Proxy.Debugf(s.ctx, "[stream] [xprotocol] appendData, direction = %d, requestId = %d", s.direction, s.id)
 	}
+
+	s.frame.SetData(data)
 
 	if endStream {
 		s.endStream()
@@ -120,7 +129,7 @@ func (s *xStream) endStream() {
 	}()
 
 	if log.Proxy.GetLogLevel() >= log.DEBUG {
-		log.Proxy.Debugf(s.ctx, "[stream] [xprotocol] endStream, direction = %d, requestId = %v", s.direction, s.id)
+		log.Proxy.Debugf(s.ctx, "[stream] [xprotocol] connection %d endStream, direction = %d, requestId = %v", s.sc.netConn.ID(), s.direction, s.id)
 	}
 
 	if s.frame != nil {
@@ -134,9 +143,11 @@ func (s *xStream) endStream() {
 			return
 		}
 
-		// TODO: header mutate support
+		tracks := track.TrackBufferByContext(s.ctx).Tracks
 
+		tracks.StartTrack(track.NetworkDataWrite)
 		err = s.sc.netConn.Write(buf)
+		tracks.EndTrack(track.NetworkDataWrite)
 
 		if err != nil {
 			log.Proxy.Errorf(s.ctx, "[stream] [xprotocol] endStream, requestId = %v, error = %v", s.id, err)

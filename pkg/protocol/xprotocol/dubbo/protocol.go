@@ -21,6 +21,10 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync/atomic"
+
+	hessian "github.com/apache/dubbo-go-hessian2"
+	"mosn.io/api"
 
 	"mosn.io/mosn/pkg/log"
 	"mosn.io/mosn/pkg/protocol/xprotocol"
@@ -70,7 +74,7 @@ func (proto *dubboProtocol) Encode(ctx context.Context, model interface{}) (type
 		}
 	}
 	log.Proxy.Errorf(ctx, "[protocol][dubbo] encode with unknown command : %+v", model)
-	return nil, xprotocol.ErrUnknownType
+	return nil, api.ErrUnknownType
 }
 
 func (proto *dubboProtocol) Decode(ctx context.Context, data types.IoBuffer) (interface{}, error) {
@@ -90,32 +94,64 @@ func (proto *dubboProtocol) Decode(ctx context.Context, data types.IoBuffer) (in
 }
 
 // heartbeater
-func (proto *dubboProtocol) Trigger(requestId uint64) xprotocol.XFrame {
+func (proto *dubboProtocol) Trigger(ctx context.Context, requestId uint64) api.XFrame {
 	// not support
 	return nil
 }
 
-func (proto *dubboProtocol) Reply(requestId uint64) xprotocol.XRespFrame {
+func (proto *dubboProtocol) Reply(ctx context.Context, request api.XFrame) api.XRespFrame {
 	// TODO make readable
 	return &Frame{
 		Header: Header{
 			Magic:   MagicTag,
 			Flag:    0x22,
 			Status:  0x14,
-			Id:      requestId,
+			Id:      request.GetRequestId(),
 			DataLen: 0x02,
 		},
 		payload: []byte{0x4e, 0x4e},
 	}
 }
 
+// https://dubbo.apache.org/zh-cn/blog/dubbo-protocol.html
 // hijacker
-func (proto *dubboProtocol) Hijack(statusCode uint32) xprotocol.XRespFrame {
-	// not support
-	return nil
+func (proto *dubboProtocol) Hijack(ctx context.Context, request api.XFrame, statusCode uint32) api.XRespFrame {
+	dubboStatus, ok := dubboMosnStatusMap[int(statusCode)]
+	if !ok {
+		dubboStatus = dubboStatusInfo{
+			Status: hessian.Response_SERVICE_ERROR,
+			Msg:    fmt.Sprintf("%d status not define", statusCode),
+		}
+	}
+
+	encoder := hessian.NewEncoder()
+	encoder.Encode(dubboStatus.Msg)
+	payload := encoder.Buffer()
+	return &Frame{
+		Header: Header{
+			Magic:   MagicTag,
+			Flag:    0x02,
+			Status:  dubboStatus.Status,
+			Id:      request.GetRequestId(),
+			DataLen: uint32(len(payload)),
+		},
+		payload: payload,
+	}
 }
 
 func (proto *dubboProtocol) Mapping(httpStatusCode uint32) uint32 {
-	// not support
-	return 0
+	return httpStatusCode
+}
+
+// PoolMode returns whether pingpong or multiplex
+func (proto *dubboProtocol) PoolMode() api.PoolMode {
+	return api.Multiplex
+}
+
+func (proto *dubboProtocol) EnableWorkerPool() bool {
+	return true
+}
+
+func (proto *dubboProtocol) GenerateRequestID(streamID *uint64) uint64 {
+	return atomic.AddUint64(streamID, 1)
 }

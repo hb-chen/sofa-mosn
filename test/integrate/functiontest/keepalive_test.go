@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"mosn.io/api"
+
 	"mosn.io/mosn/pkg/mosn"
 	"mosn.io/mosn/pkg/protocol/xprotocol"
 	"mosn.io/mosn/pkg/protocol/xprotocol/bolt"
@@ -17,7 +19,7 @@ import (
 type heartBeatServer struct {
 	util.UpstreamServer
 	HeartBeatCount uint32
-	boltProto      xprotocol.XProtocol
+	boltProto      api.XProtocol
 }
 
 func (s *heartBeatServer) ServeBoltOrHeartbeat(t *testing.T, conn net.Conn) {
@@ -31,7 +33,7 @@ func (s *heartBeatServer) ServeBoltOrHeartbeat(t *testing.T, conn net.Conn) {
 			var err error
 			switch req.CmdCode {
 			case bolt.CmdCodeHeartbeat:
-				hbAck := s.boltProto.Reply(uint64(req.RequestId))
+				hbAck := s.boltProto.Reply(context.TODO(), req)
 				iobufresp, err = s.boltProto.Encode(context.Background(), hbAck)
 				atomic.AddUint32(&s.HeartBeatCount, 1)
 			case bolt.CmdCodeRpcRequest:

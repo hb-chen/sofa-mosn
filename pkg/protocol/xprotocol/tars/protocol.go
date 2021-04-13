@@ -20,9 +20,12 @@ package tars
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
-	"github.com/TarsCloud/TarsGo/tars"
+	tarsprotocol "github.com/TarsCloud/TarsGo/tars/protocol"
 	"github.com/TarsCloud/TarsGo/tars/protocol/codec"
+	"mosn.io/api"
+
 	"mosn.io/mosn/pkg/log"
 	"mosn.io/mosn/pkg/protocol/xprotocol"
 	"mosn.io/mosn/pkg/types"
@@ -49,12 +52,12 @@ func (proto *tarsProtocol) Encode(ctx context.Context, model interface{}) (types
 	default:
 		log.Proxy.Errorf(ctx, "[protocol][tars] encode with unknown command : %+v", model)
 	}
-	return nil, xprotocol.ErrUnknownType
+	return nil, api.ErrUnknownType
 }
 
 func (proto *tarsProtocol) Decode(ctx context.Context, data types.IoBuffer) (interface{}, error) {
-	_, status := tars.TarsRequest(data.Bytes())
-	if status == tars.PACKAGE_FULL {
+	_, status := tarsprotocol.TarsRequest(data.Bytes())
+	if status == tarsprotocol.PACKAGE_FULL {
 		streamType, err := getStreamType(data.Bytes())
 		switch streamType {
 		case CmdTypeRequest:
@@ -70,18 +73,18 @@ func (proto *tarsProtocol) Decode(ctx context.Context, data types.IoBuffer) (int
 }
 
 // heartbeater
-func (proto *tarsProtocol) Trigger(requestId uint64) xprotocol.XFrame {
+func (proto *tarsProtocol) Trigger(ctx context.Context, requestId uint64) api.XFrame {
 	// not support
 	return nil
 }
 
-func (proto *tarsProtocol) Reply(requestId uint64) xprotocol.XRespFrame {
+func (proto *tarsProtocol) Reply(ctx context.Context, request api.XFrame) api.XRespFrame {
 	// not support
 	return nil
 }
 
 // hijacker
-func (proto *tarsProtocol) Hijack(statusCode uint32) xprotocol.XRespFrame {
+func (proto *tarsProtocol) Hijack(ctx context.Context, request api.XFrame, statusCode uint32) api.XRespFrame {
 	// not support
 	return nil
 }
@@ -114,5 +117,17 @@ func getStreamType(pkg []byte) (byte, error) {
 		return CmdTypeUndefine, nil
 
 	}
-	return CmdTypeUndefine, nil
+}
+
+// PoolMode returns whether pingpong or multiplex
+func (proto *tarsProtocol) PoolMode() api.PoolMode {
+	return api.Multiplex
+}
+
+func (proto *tarsProtocol) EnableWorkerPool() bool {
+	return true
+}
+
+func (proto *tarsProtocol) GenerateRequestID(streamID *uint64) uint64 {
+	return atomic.AddUint64(streamID, 1)
 }

@@ -18,8 +18,10 @@
 package dubbo
 
 import (
+	"mosn.io/api"
+	"mosn.io/pkg/buffer"
+
 	"mosn.io/mosn/pkg/protocol"
-	"mosn.io/mosn/pkg/protocol/xprotocol"
 	"mosn.io/mosn/pkg/types"
 )
 
@@ -30,10 +32,10 @@ type Header struct {
 	Id      uint64
 	DataLen uint32
 
-	Event           int // 1 mean ping
-	TwoWay          int // 1 mean req & resp pair
-	Direction       int // 1 mean req
-	SerializationId int // 2 mean hessian
+	IsEvent         bool // true: heartbeat or readonly event
+	IsTwoWay        bool // true: send request and expect response, false: just request without response
+	Direction       int  // 1 mean req
+	SerializationId int  // 2 mean hessian
 	protocol.CommonHeader
 }
 
@@ -46,6 +48,8 @@ type Frame struct {
 	content types.IoBuffer // wrapper of payload
 }
 
+var _ api.XFrame = &Frame{}
+
 // ~ XFrame
 func (r *Frame) GetRequestId() uint64 {
 	return r.Header.Id
@@ -56,17 +60,23 @@ func (r *Frame) SetRequestId(id uint64) {
 }
 
 func (r *Frame) IsHeartbeatFrame() bool {
-	return r.Header.Event != 0
+	return r.Header.IsEvent
 }
 
-func (r *Frame) GetStreamType() xprotocol.StreamType {
+// dubbo frame returns default timeout
+// TODO: use dubbo timeout?
+func (r *Frame) GetTimeout() int32 {
+	return 0
+}
+
+func (r *Frame) GetStreamType() api.StreamType {
 	switch r.Direction {
 	case EventRequest:
-		return xprotocol.Request
+		return api.Request
 	case EventResponse:
-		return xprotocol.Response
+		return api.Response
 	default:
-		return xprotocol.Request
+		return api.Request
 	}
 }
 
@@ -78,6 +88,25 @@ func (r *Frame) GetData() types.IoBuffer {
 	return r.content
 }
 
+func (r *Frame) SetData(data types.IoBuffer) {
+	r.content = data
+	r.payload = data.Bytes()
+	r.DataLen = uint32(data.Len())
+}
+
 func (r *Frame) GetStatusCode() uint32 {
 	return uint32(r.Header.Status)
+}
+
+func (r *Frame) Clone() api.HeaderMap {
+	clone := &Frame{
+		rawData: make([]byte, len(r.rawData)),
+		payload: make([]byte, len(r.payload)),
+	}
+	clone.Header = r.Header
+	copy(clone.rawData, r.rawData)
+	copy(clone.payload, r.payload)
+	clone.data = buffer.NewIoBufferBytes(clone.rawData)
+	clone.content = buffer.NewIoBufferBytes(clone.payload)
+	return clone
 }

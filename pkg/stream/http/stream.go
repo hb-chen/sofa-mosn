@@ -20,14 +20,18 @@ package http
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"mosn.io/mosn/pkg/variable"
 
 	"github.com/valyala/fasthttp"
 	"mosn.io/api"
@@ -48,6 +52,7 @@ func init() {
 }
 
 const defaultMaxRequestBodySize = 4 * 1024 * 1024
+const defaultMaxHeaderSize = 4 * 1024
 
 var (
 	errConnClose = errors.New("connection closed")
@@ -122,10 +127,10 @@ type streamConnection struct {
 	resetReason       types.StreamResetReason
 
 	bufChan    chan buffer.IoBuffer
+	endRead    chan struct{}
 	connClosed chan bool
 
 	br *bufio.Reader
-	bw *bufio.Writer
 }
 
 // types.StreamConnection
@@ -139,7 +144,7 @@ func (sc *streamConnection) Dispatch(buffer buffer.IoBuffer) {
 
 	for buffer.Len() > 0 {
 		sc.bufChan <- buffer
-		<-sc.bufChan
+		<-sc.endRead
 	}
 }
 
@@ -147,9 +152,21 @@ func (conn *streamConnection) Protocol() types.ProtocolName {
 	return protocol.HTTP1
 }
 
+func (conn *streamConnection) EnableWorkerPool() bool {
+	return true
+}
+
 func (conn *streamConnection) GoAway() {}
 
 func (conn *streamConnection) Read(p []byte) (n int, err error) {
+	// conn.bufChan <- nil Maybe caused panic error when connection closed.
+	defer func() {
+		if r := recover(); r != nil {
+			log.DefaultLogger.Infof("[stream] [http] connection has closed. Connection = %d, Local Address = %+v, Remote Address = %+v, err = %+v",
+				conn.conn.ID(), conn.conn.LocalAddr(), conn.conn.RemoteAddr(), r)
+		}
+	}()
+
 	data, ok := <-conn.bufChan
 
 	// Connection close
@@ -168,7 +185,7 @@ func (conn *streamConnection) Read(p []byte) (n int, err error) {
 
 	n = copy(p, data.Bytes())
 	data.Drain(n)
-	conn.bufChan <- nil
+	conn.endRead <- struct{}{}
 	return
 }
 
@@ -181,6 +198,13 @@ func (conn *streamConnection) Write(p []byte) (n int, err error) {
 
 	err = conn.conn.Write(buf)
 	return
+}
+
+func (conn *streamConnection) Reset(reason types.StreamResetReason) {
+	close(conn.bufChan)
+	close(conn.endRead)
+	close(conn.connClosed)
+	conn.resetReason = reason
 }
 
 // types.ClientStreamConnection
@@ -203,6 +227,7 @@ func newClientStreamConnection(ctx context.Context, connection types.ClientConne
 			context:    ctx,
 			conn:       connection,
 			bufChan:    make(chan buffer.IoBuffer),
+			endRead:    make(chan struct{}),
 			connClosed: make(chan bool, 1),
 		},
 		connectionEventListener:       connCallbacks,
@@ -210,8 +235,25 @@ func newClientStreamConnection(ctx context.Context, connection types.ClientConne
 		requestSent:                   make(chan bool, 1),
 	}
 
-	csc.br = bufio.NewReader(csc)
-	csc.bw = bufio.NewWriter(csc)
+	// Per-connection buffer size for responses' reading.
+	// This also limits the maximum header size, default 4096.
+	maxResponseHeaderSize := 0
+	if pgc := mosnctx.Get(ctx, types.ContextKeyProxyGeneralConfig); pgc != nil {
+		if extendConfig, ok := pgc.(map[string]interface{}); ok {
+			if v, ok := extendConfig["max_header_size"]; ok {
+				// json.Unmarshal stores float64 for JSON numbers in the interface{}
+				// see doc: https://golang.org/pkg/encoding/json/#Unmarshal
+				if fv, ok := v.(float64); ok {
+					maxResponseHeaderSize = int(fv)
+				}
+			}
+		}
+	}
+	if maxResponseHeaderSize <= 0 {
+		maxResponseHeaderSize = defaultMaxHeaderSize
+	}
+
+	csc.br = bufio.NewReaderSize(csc, maxResponseHeaderSize)
 
 	utils.GoWithRecover(func() {
 		csc.serve()
@@ -231,6 +273,13 @@ func (conn *clientStreamConnection) serve() {
 		s := conn.stream
 		buffers := httpBuffersByContext(s.ctx)
 		s.response = &buffers.clientResponse
+		request := &buffers.serverRequest
+
+		// Response.Read() skips reading body if set to true.
+		// Use it for reading HEAD responses.
+		if request.Header.IsHead() {
+			s.response.SkipBody = true
+		}
 
 		// 1. blocking read using fasthttp.Response.Read
 		err := s.response.Read(conn.br)
@@ -317,16 +366,64 @@ func (conn *clientStreamConnection) CheckReasonError(connected bool, event api.C
 	return reason, true
 }
 
-func (conn *clientStreamConnection) Reset(reason types.StreamResetReason) {
-	close(conn.bufChan)
-	close(conn.connClosed)
-	conn.resetReason = reason
+type StreamConfig struct {
+	MaxHeaderSize      int  `json:"max_header_size,omitempty"`
+	MaxRequestBodySize int  `json:"max_request_body_size,omitempty"`
+}
+
+func parseStreamConfig(ctx context.Context) StreamConfig {
+	var streamConfig = StreamConfig{
+		// Per-connection buffer size for requests' reading.
+		// This also limits the maximum header size, default 4096.
+		MaxHeaderSize: defaultMaxHeaderSize,
+		// 0 is means no limit request body size
+		MaxRequestBodySize: 0,
+	}
+
+	// get extend config from ctx
+	pgc := mosnctx.Get(ctx, types.ContextKeyProxyGeneralConfig)
+	if pgc == nil {
+		return streamConfig
+	}
+	extendConfig, ok := pgc.(map[string]interface{})
+	if !ok {
+		return streamConfig
+	}
+
+	// extract http1 config
+	if config, ok := extendConfig[string(protocol.HTTP1)]; ok {
+		configBytes, err := json.Marshal(config)
+		if err != nil {
+			return streamConfig
+		}
+
+		err = json.Unmarshal(configBytes, &streamConfig)
+		if err != nil {
+			return streamConfig
+		}
+	} else {
+		if v, ok := extendConfig["max_header_size"]; ok {
+			// json.Unmarshal stores float64 for JSON numbers in the interface{}
+			// see doc: https://golang.org/pkg/encoding/json/#Unmarshal
+			if fv, ok := v.(float64); ok {
+				streamConfig.MaxHeaderSize = int(fv)
+			}
+		}
+		if v, ok := extendConfig["max_request_body_size"]; ok {
+			if fv, ok := v.(float64); ok {
+				streamConfig.MaxRequestBodySize = int(fv)
+			}
+		}
+	}
+
+	return streamConfig
 }
 
 // types.ServerStreamConnection
 type serverStreamConnection struct {
 	streamConnection
 	contextManager *str.ContextManager
+	config         StreamConfig
 
 	close bool
 
@@ -342,8 +439,10 @@ func newServerStreamConnection(ctx context.Context, connection api.Connection,
 			context:    ctx,
 			conn:       connection,
 			bufChan:    make(chan buffer.IoBuffer),
+			endRead:    make(chan struct{}),
 			connClosed: make(chan bool, 1),
 		},
+		config:                   parseStreamConfig(ctx),
 		contextManager:           str.NewContextManager(ctx),
 		serverStreamConnListener: callbacks,
 	}
@@ -351,8 +450,7 @@ func newServerStreamConnection(ctx context.Context, connection api.Connection,
 	// init first context
 	ssc.contextManager.Next()
 
-	ssc.br = bufio.NewReader(ssc)
-	ssc.bw = bufio.NewWriter(ssc)
+	ssc.br = bufio.NewReaderSize(ssc, ssc.config.MaxHeaderSize)
 
 	// Reset would not be called in server-side scene, so add listener for connection event
 	connection.AddConnectionEventListener(ssc)
@@ -372,8 +470,14 @@ func newServerStreamConnection(ctx context.Context, connection api.Connection,
 
 func (conn *serverStreamConnection) OnEvent(event api.ConnectionEvent) {
 	if event.IsClose() {
-		close(conn.bufChan)
-		close(conn.connClosed)
+		var reason types.StreamResetReason
+		switch event {
+		case api.RemoteClose:
+			reason = types.UpstreamReset
+		default:
+			reason = types.StreamConnectionTermination
+		}
+		conn.Reset(reason)
 	}
 }
 
@@ -384,10 +488,11 @@ func (conn *serverStreamConnection) serve() {
 		buffers := httpBuffersByContext(ctx)
 		request := &buffers.serverRequest
 
-		request.Header.DisableNormalizing()
+		// 0 is means no limit request body size
+		maxRequestBodySize := conn.config.MaxRequestBodySize
 
 		// 2. blocking read using fasthttp.Request.Read
-		err := request.ReadLimitBody(conn.br, defaultMaxRequestBodySize)
+		err := request.ReadLimitBody(conn.br, maxRequestBodySize)
 		if err == nil {
 			// 3. 'Expect: 100-continue' request handling.
 			// See http://www.w3.org/Protocols/rfc2616/rfc2616-sec8.html for details.
@@ -396,16 +501,20 @@ func (conn *serverStreamConnection) serve() {
 				conn.conn.Write(buffer.NewIoBufferBytes(strResponseContinue))
 
 				// read request body
-				err = request.ContinueReadBody(conn.br, defaultMaxRequestBodySize)
+				err = request.ContinueReadBody(conn.br, maxRequestBodySize)
 
 				// remove 'Expect' header, so it would not be sent to the upstream
 				request.Header.Del("Expect")
 			}
 		}
 		if err != nil {
-			// "read timeout with nothing read" is the error of returned by fasthttp v1.2.0
-			// if connection closed with nothing read.
-			if err != errConnClose && err != io.EOF && err.Error() != "read timeout with nothing read" {
+			// ErrNothingRead is returned that means just a keep-alive connection
+			// closing down either because the remote closed it or because
+			// or a read timeout on our side. Either way just close the connection
+			// and don't return any error response.
+			// Refer https://github.com/valyala/fasthttp/commit/598a52272abafde3c5bebd7cc1972d3bead7a1f7
+			_, errNothingRead := err.(fasthttp.ErrNothingRead)
+			if err != errConnClose && err != io.EOF && !errNothingRead {
 				// write error response
 				conn.conn.Write(buffer.NewIoBufferBytes(strErrorResponse))
 
@@ -427,9 +536,9 @@ func (conn *serverStreamConnection) serve() {
 		}
 		s.connection = conn
 		s.responseDoneChan = make(chan bool, 1)
-		s.header = mosnhttp.RequestHeader{&s.request.Header, nil}
+		s.header = mosnhttp.RequestHeader{&s.request.Header}
 
-		var span types.Span
+		var span api.Span
 		if trace.IsEnabled() {
 			tracer := trace.Tracer(protocol.HTTP1)
 			if tracer != nil {
@@ -449,7 +558,7 @@ func (conn *serverStreamConnection) serve() {
 		conn.mutex.Unlock()
 
 		if atomic.LoadInt32(&s.readDisableCount) <= 0 {
-			s.handleRequest()
+			s.handleRequest(s.stream.ctx)
 		}
 
 		// 5. wait for proxy done
@@ -492,10 +601,6 @@ func (conn *serverStreamConnection) CheckReasonError(connected bool, event api.C
 	return reason, true
 }
 
-func (conn *serverStreamConnection) Reset(reason types.StreamResetReason) {
-	close(conn.bufChan)
-}
-
 // types.Stream
 // types.StreamSender
 type stream struct {
@@ -526,8 +631,7 @@ type clientStream struct {
 
 // types.StreamSender
 func (s *clientStream) AppendHeaders(context context.Context, headersIn types.HeaderMap, endStream bool) error {
-	// clone for retry case
-	headers := headersIn.Clone().(mosnhttp.RequestHeader)
+	headers := headersIn.(mosnhttp.RequestHeader)
 
 	// TODO: protocol convert in pkg/protocol
 	//if the request contains body, use "POST" as default, the http request method will be setted by MosnHeaderMethod
@@ -537,7 +641,12 @@ func (s *clientStream) AppendHeaders(context context.Context, headersIn types.He
 		headers.SetMethod(http.MethodPost)
 	}
 
-	removeInternalHeaders(headers, s.connection.conn.RemoteAddr())
+	// clear 'Connection:close' header for keepalive connection with upstream
+	if headers.ConnectionClose() {
+		headers.Del("Connection")
+	}
+
+	FillRequestHeadersFromCtxVar(context, headers, s.connection.conn.RemoteAddr())
 
 	// copy headers
 	headers.CopyTo(&s.request.Header)
@@ -603,12 +712,12 @@ func (s *clientStream) doSend() (err error) {
 
 func (s *clientStream) handleResponse() {
 	if s.response != nil {
-		header := mosnhttp.ResponseHeader{&s.response.Header, nil}
+		header := mosnhttp.ResponseHeader{&s.response.Header}
 
 		statusCode := header.StatusCode()
 		status := strconv.Itoa(statusCode)
 		// inherit upstream's response status
-		header.Set(types.HeaderStatus, status)
+		variable.SetVariableValue(s.ctx, types.VarHeaderStatus, status)
 
 		hasData := true
 		if len(s.response.Body()) == 0 {
@@ -619,10 +728,12 @@ func (s *clientStream) handleResponse() {
 		s.connection.stream = nil
 		s.connection.mutex.Unlock()
 
-		if hasData {
-			s.receiver.OnReceive(s.ctx, header, buffer.NewIoBufferBytes(s.response.Body()), nil)
-		} else {
-			s.receiver.OnReceive(s.ctx, header, nil, nil)
+		if s.receiver != nil {
+			if hasData {
+				s.receiver.OnReceive(s.ctx, header, buffer.NewIoBufferBytes(s.response.Body()), nil)
+			} else {
+				s.receiver.OnReceive(s.ctx, header, nil, nil)
+			}
 		}
 
 		//TODO cannot recycle immediately, headers might be used by proxy logic
@@ -649,23 +760,27 @@ func (s *serverStream) AppendHeaders(context context.Context, headersIn types.He
 	switch headers := headersIn.(type) {
 	case mosnhttp.RequestHeader:
 		// hijack scene
-		if status, ok := headers.Get(types.HeaderStatus); ok {
-			headers.Del(types.HeaderStatus)
-
-			statusCode, _ := strconv.Atoi(status)
+		status, err := variable.GetVariableValue(context, types.VarHeaderStatus)
+		if err == nil && status != "" {
+			statusCode, err := strconv.Atoi(status)
+			if err != nil {
+				return err
+			}
 			s.response.SetStatusCode(statusCode)
 
-			removeInternalHeaders(headers, s.connection.conn.RemoteAddr())
+			FillRequestHeadersFromCtxVar(context, headers, s.connection.conn.RemoteAddr())
 
 			// need to echo all request headers for protocol convert
 			headers.VisitAll(func(key, value []byte) {
 				s.response.Header.SetBytesKV(key, value)
 			})
-		}
-	case mosnhttp.ResponseHeader:
-		if status, ok := headers.Get(types.HeaderStatus); ok {
-			headers.Del(types.HeaderStatus)
 
+		}
+
+	case mosnhttp.ResponseHeader:
+
+		status, err := variable.GetVariableValue(context, types.VarHeaderStatus)
+		if err == nil && status != "" {
 			statusCode, _ := strconv.Atoi(status)
 			headers.SetStatusCode(statusCode)
 		}
@@ -681,7 +796,9 @@ func (s *serverStream) AppendHeaders(context context.Context, headersIn types.He
 }
 
 func (s *serverStream) AppendData(context context.Context, data buffer.IoBuffer, endStream bool) error {
-	s.response.SetBody(data.Bytes())
+	// SetBodyRaw sets response body and could avoid copying it
+	// note: When it's actually sent to the network, it will copy the data once in Write func.
+	s.response.SetBodyRaw(data.Bytes())
 
 	if endStream {
 		s.endStream()
@@ -697,9 +814,20 @@ func (s *serverStream) AppendTrailers(context context.Context, trailers types.He
 
 func (s *serverStream) endStream() {
 	resetConn := false
+
+	// Response.Write() skips writing body if set to true.
+	// Use it for writing HEAD responses.
+	if s.request.Header.IsHead() {
+		s.response.SkipBody = true
+	}
+
 	// check if we need close connection
 	if s.connection.close || s.request.Header.ConnectionClose() {
-		s.response.SetConnectionClose()
+		// should delete 'Connection:keepalive' header
+		if !s.response.ConnectionClose() {
+			s.response.Header.Del("Connection")
+			s.response.SetConnectionClose()
+		}
 		resetConn = true
 	} else if !s.request.Header.IsHTTP11() {
 		// Set 'Connection: keep-alive' response header for non-HTTP/1.1 request.
@@ -730,12 +858,13 @@ func (s *serverStream) ReadDisable(disable bool) {
 		newCount := atomic.AddInt32(&s.readDisableCount, -1)
 
 		if newCount <= 0 {
-			s.handleRequest()
+			s.handleRequest(s.ctx)
 		}
 	}
 }
 
 func (s *serverStream) doSend() {
+
 	if _, err := s.response.WriteTo(s.connection); err != nil {
 		log.Proxy.Errorf(s.stream.ctx, "[stream] [http] send server response error: %+v", err)
 	} else {
@@ -745,11 +874,10 @@ func (s *serverStream) doSend() {
 	}
 }
 
-func (s *serverStream) handleRequest() {
+func (s *serverStream) handleRequest(ctx context.Context) {
 	if s.request != nil {
 		// set non-header info in request-line, like method, uri
-		injectInternalHeaders(s.header, s.request.URI())
-
+		injectCtxVarFromProtocolHeaders(ctx, s.header, s.request.URI())
 		hasData := true
 		if len(s.request.Body()) == 0 {
 			hasData = false
@@ -768,57 +896,77 @@ func (s *serverStream) GetStream() types.Stream {
 }
 
 // consider host, method, path are necessary, but check querystring
-func injectInternalHeaders(headers mosnhttp.RequestHeader, uri *fasthttp.URI) {
+func injectCtxVarFromProtocolHeaders(ctx context.Context, header mosnhttp.RequestHeader, uri *fasthttp.URI) {
 	// 1. host
-	headers.Set(protocol.MosnHeaderHostKey, string(uri.Host()))
-	// 2. :authority
-	headers.Set(protocol.IstioHeaderHostKey, string(uri.Host()))
+	variable.SetVariableValue(ctx, types.VarHost, string(uri.Host()))
+	// 2. authority
+	variable.SetVariableValue(ctx, types.VarIstioHeaderHost, string(uri.Host()))
+
 	// 3. method
-	headers.Set(protocol.MosnHeaderMethod, string(headers.Method()))
+	variable.SetVariableValue(ctx, types.VarMethod, string(header.Method()))
+
 	// 4. path
-	headers.Set(protocol.MosnHeaderPathKey, string(uri.Path()))
-	// 5. querystring
+	variable.SetVariableValue(ctx, types.VarPath, string(uri.Path()))
+
+	// 5. path original
+	variable.SetVariableValue(ctx, types.VarPathOriginal, string(uri.PathOriginal()))
+
+	// 6. querystring
 	qs := uri.QueryString()
 	if len(qs) > 0 {
-		headers.Set(protocol.MosnHeaderQueryStringKey, string(qs))
+		variable.SetVariableValue(ctx, types.VarQueryString, string(qs))
 	}
 }
 
-func removeInternalHeaders(headers mosnhttp.RequestHeader, remoteAddr net.Addr) {
-	// assemble uri
-	uri := ""
+func buildUrlFromCtxVar(ctx context.Context) string {
+	path, _ := variable.GetVariableValue(ctx, types.VarPath)
+	pathOriginal, _ := variable.GetVariableValue(ctx, types.VarPathOriginal)
+	queryString, _ := variable.GetVariableValue(ctx, types.VarQueryString)
 
-	// path
-	if path, ok := headers.Get(protocol.MosnHeaderPathKey); ok && path != "" {
-		headers.Del(protocol.MosnHeaderPathKey)
-		uri += path
+	// different from url.RequestURI() since we should by-pass the original path to upstream
+	// even if the original path contains literal space
+	var res string
+
+	unescapedPath, err := url.PathUnescape(pathOriginal)
+	if err == nil && path == unescapedPath {
+		res = pathOriginal
 	} else {
-		uri += "/"
+		if path == "*" {
+			res = "*"
+		} else {
+			u := url.URL{Path: path}
+			res = u.RequestURI()
+		}
 	}
 
-	// querystring
-	queryString, ok := headers.Get(protocol.MosnHeaderQueryStringKey)
-	if ok && queryString != "" {
-		headers.Del(protocol.MosnHeaderQueryStringKey)
-		uri += "?" + queryString
+	if res == "" {
+		res = "/"
 	}
 
-	headers.SetRequestURI(uri)
+	if queryString != "" {
+		res += "?" + queryString
+	}
 
-	if method, ok := headers.Get(protocol.MosnHeaderMethod); ok {
-		headers.Del(protocol.MosnHeaderMethod)
+	return res
+}
+
+func FillRequestHeadersFromCtxVar(ctx context.Context, headers mosnhttp.RequestHeader, remoteAddr net.Addr) {
+	headers.SetRequestURI(buildUrlFromCtxVar(ctx))
+
+	method, err := variable.GetVariableValue(ctx, types.VarMethod)
+	if err == nil && method != "" {
 		headers.SetMethod(method)
 	}
 
-	if host, ok := headers.Get(protocol.MosnHeaderHostKey); ok {
-		headers.Del(protocol.MosnHeaderHostKey)
+	host, err := variable.GetVariableValue(ctx, types.VarHost)
+	if err == nil && host != "" {
 		headers.SetHost(host)
 	} else {
 		headers.SetHost(remoteAddr.String())
 	}
 
-	if host, ok := headers.Get(protocol.IstioHeaderHostKey); ok {
-		headers.Del(protocol.IstioHeaderHostKey)
+	host, err = variable.GetVariableValue(ctx, types.VarIstioHeaderHost)
+	if err == nil && host != "" {
 		headers.SetHost(host)
 	}
 

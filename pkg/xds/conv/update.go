@@ -58,6 +58,7 @@ func ConvertAddOrUpdateListeners(listeners []*envoy_api_v2.Listener) {
 		mosnListener := ConvertListenerConfig(listener)
 		if mosnListener == nil {
 			log.DefaultLogger.Errorf("xds client ConvertListenerConfig failed")
+			Stats.LdsUpdateReject.Inc(1)
 			continue
 		}
 
@@ -65,16 +66,19 @@ func ConvertAddOrUpdateListeners(listeners []*envoy_api_v2.Listener) {
 		if listenerAdapter == nil {
 			// if listenerAdapter is nil, return directly
 			log.DefaultLogger.Errorf("listenerAdapter is nil and hasn't been initiated at this time")
+			Stats.LdsUpdateReject.Inc(1)
 			return
 		}
 
 		log.DefaultLogger.Debugf("listenerAdapter.AddOrUpdateListener called, with mosn Listener:%+v", mosnListener)
 
-		if err := listenerAdapter.AddOrUpdateListener("", mosnListener, true, true, true); err == nil {
+		if err := listenerAdapter.AddOrUpdateListener("", mosnListener); err == nil {
 			log.DefaultLogger.Debugf("xds AddOrUpdateListener success,listener address = %s", mosnListener.Addr.String())
+			Stats.LdsUpdateSuccess.Inc(1)
 		} else {
 			log.DefaultLogger.Errorf("xds AddOrUpdateListener failure,listener address = %s, msg = %s ",
 				mosnListener.Addr.String(), err.Error())
+			Stats.LdsUpdateReject.Inc(1)
 		}
 	}
 
@@ -124,9 +128,10 @@ func ConvertUpdateClusters(clusters []*envoy_api_v2.Cluster) {
 
 		if err != nil {
 			log.DefaultLogger.Errorf("xds OnUpdateClusters failed,cluster name = %s, error: %v", cluster.Name, err.Error())
-
+			Stats.CdsUpdateReject.Inc(1)
 		} else {
 			log.DefaultLogger.Debugf("xds OnUpdateClusters success,cluster name = %s", cluster.Name)
+			Stats.CdsUpdateSuccess.Inc(1)
 		}
 	}
 
@@ -160,7 +165,7 @@ func ConvertUpdateEndpoints(loadAssignments []*envoy_api_v2.ClusterLoadAssignmen
 		clusterName := loadAssignment.ClusterName
 
 		for _, endpoints := range loadAssignment.Endpoints {
-			hosts := ConvertEndpointsConfig(&endpoints)
+			hosts := ConvertEndpointsConfig(endpoints)
 			log.DefaultLogger.Debugf("xds client update endpoints: cluster: %s, priority: %d", loadAssignment.ClusterName, endpoints.Priority)
 			for index, host := range hosts {
 				log.DefaultLogger.Debugf("host[%d] is : %+v", index, host)
